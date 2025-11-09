@@ -1,0 +1,1 @@
+export const TURNKEY_API_URL = "https://api.turnkey.com"
