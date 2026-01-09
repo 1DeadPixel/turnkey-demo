@@ -1,0 +1,51 @@
+{
+  "metadata": {
+    "name": "chainworks",
+    "version": "0.1.0",
+    "spec": "0.1.0",
+    "description": "ChainWorks swap program"
+  },
+  "instructions": [
+    {
+      "name": "cw_swap",
+      "discriminator": [
+        95,
+        146,
+        1,
+        88,
+        183,
+        227,
+        36,
+        137
+      ],
+      "accounts": [
+        {
+          "name": "user",
+          "isSigner": true,
+          "isMut": true
+        }
+      ],
+      "args": [
+        {
+          "name": "in_amount",
+          "type": "u64"
+        },
+        {
+          "name": "min_output_amount",
+          "type": "u64"
+        },
+        {
+          "name": "unknown_data",
+          "type": {
+            "array": ["u8", 26]
+          }
+        }
+      ]
+    }
+  ],
+  "accounts": [],
+  "types": [],
+  "events": [],
+  "errors": []
+}
+

@@ -4,22 +4,27 @@ import { v4 as uuidv4 } from 'uuid';
 import { SessionType } from '@turnkey/sdk-types';
 import { useCallback, useEffect, useState } from 'react';
 import { useWallet } from '@solana/wallet-adapter-react';
-import {type Session, Turnkey} from '@turnkey/sdk-browser';
+import {type Session, Turnkey, TurnkeyIndexedDbClient} from '@turnkey/sdk-browser';
 import {SolanaWallet} from "@/modules/wallets/solana/wallet";
 import { WalletMultiButton } from '@solana/wallet-adapter-react-ui';
 import { generateP256KeyPair, decryptExportBundle } from '@turnkey/crypto';
 import {createSolanaConfig} from "@/modules/turnkey/configs/solana_config";
-import {definitions} from "@turnkey/sdk-types/dist/__inputs__/public_api.types";
 import {
     cosignWithPolicy,
     createSubOrg,
     getSubOrg,
     listWalletAccounts,
-    signWithTurnkeyFetch
 } from "@/modules/turnkey/actions";
-import {TurnkeyIndexedDbClient} from "@turnkey/sdk-browser/dist/__clients__/browser-clients";
-import {buildUnsignedTx} from "@/modules/tx/unsigned_tx";
-import {PublicKey} from "@solana/web3.js";
+import { setupJupiterInterface } from "@/modules/turnkey/smart_contract_interfaces";
+import {ScheduleSwapButton} from "@/app/components/ScheduleSwapButton";
+import {ChainworksPolicyTestButton} from "@/app/components/ChainworksPolicyTestButton";
+import Link from 'next/link';
+
+// Type definition for Turnkey wallet (inline to avoid import issues)
+type TurnkeyWallet = {
+  walletId: string;
+  walletName: string;
+};
 
 
 
@@ -29,10 +34,11 @@ export default function WalletAuth() {
   const wallet = useWallet();
   const [mounted, setMounted] = useState(false);
   const [session, setSession] = useState<Session | undefined>(undefined);
-  const [wallets, setWallets] = useState<definitions["v1Wallet"][]>([]);
+  const [wallets, setWallets] = useState<TurnkeyWallet[]>([]);
   const [orgId, setOrgId] = useState<string | null>(null);
   const [accounts, setAccounts] = useState<{ address: string; chain: 'SOLANA' | 'ETHEREUM' }[]>([]);
-
+  const [turnkeyClient, setTurnkeyClient] = useState<TurnkeyIndexedDbClient | null>(null);
+  const [daUserId, setDaUserId] = useState<string | null>(null);
 
 
   useEffect(() => {
@@ -67,7 +73,7 @@ export default function WalletAuth() {
 async function addPolicyReact({
     client,
   subOrgId,
-    usUserId,
+  usUserId,
 }: {
     client: TurnkeyIndexedDbClient,
   subOrgId: string;
@@ -86,21 +92,18 @@ async function addPolicyReact({
   ].join(" && ");
 
   return await client.createPolicy({
-    type: "ACTIVITY_TYPE_CREATE_POLICY_V3",
     organizationId: subOrgId,
-    timestampMs: String(Date.now()),
     policyName: `DA co-sign swaps (UW1 first, W1 second) ${uuidv4()}`,
     effect: "EFFECT_ALLOW",
     consensus,
     condition,
-      notes: "ed"
+    notes: "ed"
   });
 }
 
 async function createDAUser(client: TurnkeyIndexedDbClient, orgId: string): Promise<string> {
      const res = await client.createUsers({
-        suborganizationId: orgId,
-        timestampMs: String(Date.now()),
+        organizationId: orgId,
         users: [
             {  /** @description Human-readable name for a User. */
         userName: "Le boss",
@@ -135,6 +138,33 @@ async function updateQuorum(client: TurnkeyIndexedDbClient, orgId: string, userI
      )
 }
 
+// Remove DA user from root quorum - keep only the specified user (original user)
+async function removeDAFromQuorum(client: TurnkeyIndexedDbClient, orgId: string, keepUserId: string) {
+    console.log("Removing DA from quorum, keeping user:", keepUserId);
+    return await client.updateRootQuorum({
+        timestampMs: String(Date.now()),
+        organizationId: orgId,
+        threshold: 1,
+        userIds: [keepUserId]
+    });
+}
+
+// Delete all existing policies in the sub-org
+async function deleteAllPolicies(client: TurnkeyIndexedDbClient, orgId: string) {
+    console.log("Fetching existing policies...");
+    const policies = await client.getPolicies({ organizationId: orgId });
+    console.log("Found policies:", policies.policies.length);
+
+    for (const policy of policies.policies) {
+        console.log("Deleting policy:", policy.policyId, policy.policyName);
+        await client.deletePolicy({
+            organizationId: orgId,
+            policyId: policy.policyId
+        });
+    }
+    console.log("All policies deleted");
+}
+
 
   const login = useCallback(async () => {
     try {
@@ -156,6 +186,7 @@ async function updateQuorum(client: TurnkeyIndexedDbClient, orgId: string, userI
         if (!orgIdNow) throw new Error('Failed to create sub-organization');
         console.log('Sub-Organization created:', orgIdNow);
       }
+      console.log(orgIdNow)
       setOrgId(orgIdNow);
 
 
@@ -167,10 +198,16 @@ async function updateQuorum(client: TurnkeyIndexedDbClient, orgId: string, userI
       const idbPub = await client.getPublicKey();
 
 
-      await walletClient.loginWithWallet({ sessionType: SessionType.READ_WRITE, publicKey: idbPub! , expirationSeconds: "10"});
+      await walletClient.loginWithWallet({
+        organizationId: orgIdNow!,
+        sessionType: SessionType.READ_WRITE,
+        publicKey: idbPub!,
+        expirationSeconds: "900" // 15 minutes to allow policy creation and swap execution
+      });
       setSession(await turnkey.getSession());
       console.log('Login successful');
       setOrgId(orgIdNow)
+      setTurnkeyClient(client);
 
       const wallets = await client.getWallets({ organizationId: orgIdNow! });
       setWallets(wallets.wallets);
@@ -183,36 +220,56 @@ async function updateQuorum(client: TurnkeyIndexedDbClient, orgId: string, userI
       for (const a of solAccs) {
         await exportAndLogAccountClient(client, a.address, orgIdNow!);
       }
-      // Create us as a DA for the user suborg using its session
-      //const daUser = await createDAUser(client, orgIdNow)
-        const cor = await updateQuorum(client, orgIdNow, "b43c840f-4652-472d-bc68-a4bcfeb93976")
-        console.log(cor)
-      // 5) Create a policy that allows any transaction that has Jupiter aggregator as the target and we are also the signers
-        const policy = await addPolicyReact({client:client, subOrgId: orgIdNow!, usUserId: "7b91a186-0408-471c-8a9b-6a4b163b39c1"})
-        console.log("Policy")
-        console.log(policy)
-        // 6) await for the session to expire
-        const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-      console.log("sleeping 10s")
-      await sleep(10000)
-        let tx = await buildUnsignedTx(process.env.NEXT_PUBLIC_SOLANA_RPC_URL!, new PublicKey(accs[0].address), new PublicKey(process.env.NEXT_PUBLIC_COSIGNER_PUBLIC_KEY!), false)
-        console.log(tx)
-        // 7) Attempt a tx where we don't sign, fails
-        try{
-            console.log("W1")
-            console.log(accs[0].address)
-            console.log("org")
-            console.log(orgIdNow)
-            console.log("tx")
-            console.log(tx)
-            await cosignWithPolicy(orgIdNow, accs[0].address, tx)
-        } catch {console.log("Failed to sign tx")}
 
-        // 8) Attempt a tx where we sign, goes through
-        tx = await buildUnsignedTx(process.env.NEXT_PUBLIC_SOLANA_RPC_URL!, new PublicKey(accs[0].address), new PublicKey(process.env.NEXT_PUBLIC_COSIGNER_PUBLIC_KEY!), true)
-    const signedTx = await cosignWithPolicy(orgIdNow, accs[0].address, tx)
-        console.log("signed tx")
-        console.log(signedTx)
+      // Use hardcoded DA user ID (exists in current sub-org)
+      const daUserIdNow = "84b02b2a-79ba-46bc-b908-28f67b657a07";
+      setDaUserId(daUserIdNow);
+      console.log("DA USER ID (hardcoded)")
+      console.log(daUserIdNow)
+
+      // Get the current user's ID to keep them as the only quorum member
+      const currentUser = await client.getWhoami({ organizationId: orgIdNow });
+      console.log("Current user:", currentUser);
+
+      // Remove DA user from root quorum - keep only the original user
+      await removeDAFromQuorum(client, orgIdNow!, currentUser.userId);
+
+      // Setup Jupiter smart contract interface (removes old interfaces, adds Jupiter IDL)
+      console.log("Setting up Jupiter smart contract interface...");
+      const jupiterSetup = await setupJupiterInterface(client, orgIdNow!);
+      console.log("Jupiter interface setup complete:", jupiterSetup);
+
+      // Delete all existing policies before creating new one
+      await deleteAllPolicies(client, orgIdNow!);
+
+      // Old swap code commented out - using ScheduleSwapButton for delayed swaps now
+      // // 5) Create a policy that allows the DA user to sign transactions with cosigner
+      // // The DA user is NOT in the root quorum - they can only act through this policy
+      //   // const policy = await addPolicyReact({client:client, subOrgId: orgIdNow!, usUserId: daUserIdNow})
+      //   //console.log("Policy")
+      //   //console.log(policy)
+      //   // 6) await for the session to expire
+      //   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+      // console.log("sleeping 10s")
+      // await sleep(10000)
+      //   let tx = await buildUnsignedTx(process.env.NEXT_PUBLIC_SOLANA_RPC_URL!, new PublicKey(accs[0].address), new PublicKey(process.env.NEXT_PUBLIC_COSIGNER_PUBLIC_KEY!), false)
+      //   console.log(tx)
+      //   // 7) Attempt a tx where we don't sign, fails
+      //   try{
+      //       console.log("W1")
+      //       console.log(accs[0].address)
+      //       console.log("org")
+      //       console.log(orgIdNow)
+      //       console.log("tx")
+      //       console.log(tx)
+      //       await cosignWithPolicy(orgIdNow, accs[0].address, tx)
+      //   } catch {console.log("Failed to sign tx")}
+
+      //   // 8) Attempt a tx where we sign, goes through
+      //   tx = await buildUnsignedTx(process.env.NEXT_PUBLIC_SOLANA_RPC_URL!, new PublicKey(accs[0].address), new PublicKey(process.env.NEXT_PUBLIC_COSIGNER_PUBLIC_KEY!), true)
+      // const signedTx = await cosignWithPolicy(orgIdNow, accs[0].address, tx)
+      //   console.log("signed tx")
+      //   console.log(signedTx)
     } catch (err) {
       console.error('Login error:', err);
     }
@@ -222,9 +279,17 @@ async function updateQuorum(client: TurnkeyIndexedDbClient, orgId: string, userI
 
   return (
     <div className="max-w-md mx-auto bg-white rounded-lg shadow-md p-6 space-y-4">
-      <h2 className="text-xl font-bold mb-4 text-gray-800">
-        Turnkey Solana Wallet Auth
-      </h2>
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="text-xl font-bold text-gray-800">
+          Turnkey Solana Wallet Auth
+        </h2>
+        <Link
+          href="/activities"
+          className="text-sm text-blue-600 hover:text-blue-800 hover:underline"
+        >
+          View Activities →
+        </Link>
+      </div>
 
       {session && wallets.length > 0 && (
         <div className="space-y-4 mb-6">
@@ -243,6 +308,28 @@ async function updateQuorum(client: TurnkeyIndexedDbClient, orgId: string, userI
             </div>
           ))}
         </div>
+      )}
+
+      {/* Schedule Swap Button - shown when logged in with a Solana account */}
+      {session && turnkeyClient && orgId && daUserId && accounts.length > 0 && (
+        <ScheduleSwapButton
+          orgId={orgId}
+          walletAddress={accounts[0].address}
+          daUserId={daUserId}
+          client={turnkeyClient}
+        />
+      )}
+
+      {/* ChainWorks Policy Test Button */}
+      {session && turnkeyClient && orgId && daUserId && accounts.length > 0 && (
+        <ChainworksPolicyTestButton
+          orgId={orgId}
+          walletAddress={accounts[0].address}
+          daUserId={daUserId}
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          client={turnkeyClient as any}
+          signTransaction={cosignWithPolicy}
+        />
       )}
 
       {!session && (
