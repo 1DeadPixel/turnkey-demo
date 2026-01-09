@@ -18,6 +18,7 @@ import {
 import { setupJupiterInterface } from "@/modules/turnkey/smart_contract_interfaces";
 import {ScheduleSwapButton} from "@/app/components/ScheduleSwapButton";
 import {ChainworksPolicyTestButton} from "@/app/components/ChainworksPolicyTestButton";
+import {CreateCosignerPolicyButton} from "@/app/components/CreateCosignerPolicyButton";
 import Link from 'next/link';
 
 // Type definition for Turnkey wallet (inline to avoid import issues)
@@ -186,7 +187,7 @@ async function deleteAllPolicies(client: TurnkeyIndexedDbClient, orgId: string) 
         if (!orgIdNow) throw new Error('Failed to create sub-organization');
         console.log('Sub-Organization created:', orgIdNow);
       }
-      console.log(orgIdNow)
+      console.log('User SubOrg ID:', orgIdNow);
       setOrgId(orgIdNow);
 
 
@@ -329,6 +330,15 @@ async function deleteAllPolicies(client: TurnkeyIndexedDbClient, orgId: string) 
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           client={turnkeyClient as any}
           signTransaction={cosignWithPolicy}
+        />
+      )}
+
+      {/* Create Cosigner Policy Button */}
+      {session && turnkeyClient && orgId && daUserId && (
+        <CreateCosignerPolicyButton
+          orgId={orgId}
+          daUserId={daUserId}
+          client={turnkeyClient}
         />
       )}
 
